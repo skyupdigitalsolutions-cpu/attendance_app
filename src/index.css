@@ -1,0 +1,13 @@
+@import "tailwindcss";
+
+/* Theme tokens only (no hand-written styles): font and brand colour. */
+@theme {
+  --font-sans: "Manrope Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --color-brand-50: #eef6fc;
+  --color-brand-100: #d9eaf7;
+  --color-brand-300: #8cc0e8;
+  --color-brand-400: #5aa7e6;
+  --color-brand-500: #2d84c8;
+  --color-brand-600: #1f6fb2;
+  --color-brand-700: #195a91;
+}
