@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
-import { Check, Search, X } from "lucide-react";
+import { Check, Plus, Search, X } from "lucide-react";
+import { BulkLeaveDialog } from "../components/Bulk";
 import { api, fmtDay, leaveLabel, ymdOfStored } from "../lib/core";
 import { useApp } from "../lib/app";
 import { Avatar, Badge, Button, Card, Empty, Input, Muted, Segmented, Spinner, useToast } from "../components/ui";
@@ -22,6 +23,7 @@ export default function Leave() {
   const [q, setQ] = useState("");
   const [notes, setNotes] = useState({});
   const [busy, setBusy] = useState("");
+  const [adding, setAdding] = useState(false);
 
   const load = useCallback(async () => {
     setItems(null);
@@ -47,6 +49,7 @@ export default function Leave() {
 
   return (
     <Card className="mx-auto w-full max-w-3xl p-3">
+      <BulkLeaveDialog open={adding} onClose={() => setAdding(false)} onSaved={() => { setTab("approved"); load(); }} />
       <div className="flex flex-wrap items-center gap-2 pb-2">
         <Segmented
           className="flex-1"
@@ -57,6 +60,7 @@ export default function Leave() {
             ["approved", "Approved"], ["rejected", "Rejected"], ["", "All"],
           ]}
         />
+        <Button variant="primary" icon={Plus} onClick={() => setAdding(true)} className="max-sm:w-full">Add leave</Button>
         <label className="relative w-full sm:w-56">
           <span className="sr-only">Search by name</span>
           <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-zinc-400" aria-hidden />

@@ -78,6 +78,7 @@ export default function Employee({ id }) {
     early: Boolean(d.early_logout), ot: Number(d.overtime_hours) || 0, lateBy: d.late_by_minutes || 0,
     wfh: Boolean(d.work_from_home), remark: d.remark || "", remarkBy: d.remark_by || "",
     locked: Boolean(d.admin_locked), markedBy: d.marked_by || "",
+    punchDetails: d.punch_details || [], uncorrected: d.uncorrected_punches || 0,
   })), [days, leaveTypes]);
 
   const stats = useMemo(() => {
@@ -294,7 +295,10 @@ function DayRow({ r, lateAfterMin, onEdit }) {
       )}
       {open && !r.synthetic && (
         <dl className="mb-3 ml-16 grid gap-1.5 text-sm">
-          <Row k="Punches" v={r.punches.length ? r.punches.map((p) => fmtTime(p)).join(", ") : "None recorded"} />
+          <Row k="Punches" v={r.punchDetails.length
+            ? r.punchDetails.map((p) => `${fmtTime(p.time)}${p.correction_minutes ? ` (machine ${fmtTime(new Date(new Date(p.time) - p.correction_minutes * 60000))})` : ""}`).join(", ")
+            : r.punches.length ? r.punches.map((p) => fmtTime(p)).join(", ") : "None recorded"} />
+          {r.uncorrected > 0 && <Row k="Machine clock" v={`${r.uncorrected} punch${r.uncorrected === 1 ? "" : "es"} not corrected yet. Use Settings → Check & fix data.`} />}
           <Row k="Break" v={r.breakMin ? `${r.breakMin} min` : "None"} />
           <Row k="Recorded by" v={SOURCE[r.source] || r.source || "—"} />
           {r.locked && <Row k="Marked by" v={`${r.markedBy || "Admin"} (fingerprint punches don't change this day)`} />}

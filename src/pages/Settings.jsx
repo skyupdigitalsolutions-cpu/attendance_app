@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { CalendarPlus, Clock3, Save, Trash2 } from "lucide-react";
+import { BulkHolidaysDialog } from "../components/Bulk";
+import { CalendarPlus, CheckCircle2, ListPlus, Clock3, RotateCcw, Save, ShieldCheck, Trash2, TriangleAlert, Wrench } from "lucide-react";
 import { api, fmtDay, fmtMinutes, hhmmToMin, todayLocal, ymdOfStored } from "../lib/core";
 import { useApp } from "../lib/app";
 import { Button, Card, CardTitle, Checkbox, Chip, Empty, Field, Input, Muted, Segmented, Spinner, useToast } from "../components/ui";
@@ -11,6 +12,7 @@ export default function Settings() {
   if (!policy) return <Card><Spinner /></Card>;
   return (
     <div className="grid items-start gap-3 lg:grid-cols-2">
+      <DataCard policy={policy} />
       <RulesCard policy={policy} reload={reloadPolicy} />
       <HolidaysCard policy={policy} reload={reloadPolicy} />
       <LeaveRulesCard policy={policy} reload={reloadPolicy} />
@@ -97,6 +99,7 @@ function HolidaysCard({ policy, reload }) {
   const [year, setYear] = useState(thisYear);
   const [date, setDate] = useState("");
   const [name, setName] = useState("");
+  const [bulk, setBulk] = useState(false);
   const items = useMemo(() => (policy.holidays || []).map((h) => ({ ...h, ymd: ymdOfStored(h.date) }))
     .filter((h) => h.ymd.startsWith(String(year))).sort((a, b) => (a.ymd < b.ymd ? -1 : 1)), [policy, year]);
 
@@ -124,7 +127,9 @@ function HolidaysCard({ policy, reload }) {
         <Field label="Date"><Input type="date" value={date} onChange={(e) => setDate(e.target.value)} /></Field>
         <Field label="Name" className="min-w-40 flex-1"><Input value={name} maxLength={120} placeholder="e.g. Diwali" onChange={(e) => setName(e.target.value)} /></Field>
         <Button variant="primary" type="submit" icon={CalendarPlus}>Add holiday</Button>
+        <Button icon={ListPlus} onClick={() => setBulk(true)}>Add many</Button>
       </form>
+      <BulkHolidaysDialog open={bulk} onClose={() => setBulk(false)} onSaved={reload} />
       {!items.length ? <Empty>No holidays for {year} yet. Add your company holidays so nobody is marked absent on them.</Empty> : (
         <ul>
           {items.map((h) => (
@@ -183,6 +188,115 @@ function LeaveRulesCard({ policy, reload }) {
         </table>
       </div>
       <div><Button variant="primary" icon={Save} onClick={save} loading={busy}>Save leave rules</Button></div>
+    </Card>
+  );
+}
+
+// ── Check & fix data ─────────────────────────────────────────────────────────
+function DataCard({ policy }) {
+  const toast = useToast();
+  const [health, setHealth] = useState(null);
+  const [preview, setPreview] = useState(null);
+  const [correctClock, setCorrectClock] = useState(true);
+  const [busy, setBusy] = useState("");
+  const [lastBackup, setLastBackup] = useState(() => localStorage.getItem("att_last_repair_backup") || "");
+  const offset = Number(policy.device_clock_offset_minutes) || 0;
+
+  const check = async () => {
+    setHealth(null);
+    try { setHealth((await api("/attendance-app/data-health")).data); } catch (e) { setHealth({ error: e.message }); }
+  };
+  useEffect(() => { check(); }, []);
+
+  const run = async (apply) => {
+    setBusy(apply ? "apply" : "preview");
+    try {
+      const r = (await api("/attendance-app/repair", { method: "POST", body: { apply, correct_clock: correctClock && offset !== 0 }, timeout: 120000 })).data;
+      if (apply) {
+        setPreview(null);
+        if (r.backupFile) { localStorage.setItem("att_last_repair_backup", r.backupFile); setLastBackup(r.backupFile); }
+        toast(r.applied ? `Fixed: ${r.changes} change${r.changes === 1 ? "" : "s"} saved.` : "Nothing needed fixing.");
+        check();
+      } else setPreview(r);
+    } catch (e) { toast(e.message); } finally { setBusy(""); }
+  };
+  const undo = async () => {
+    if (!confirm("Put back the attendance records exactly as they were before the last fix?")) return;
+    setBusy("undo");
+    try {
+      const r = (await api("/attendance-app/repair/undo", { method: "POST", body: { backup: lastBackup, apply: true }, timeout: 120000 })).data;
+      toast(`Restored ${r.restored} records.`);
+      localStorage.removeItem("att_last_repair_backup"); setLastBackup(""); check();
+    } catch (e) { toast(e.message); } finally { setBusy(""); }
+  };
+
+  const h = health;
+  const issues = h && !h.error ? [
+    h.split_days && `${h.split_days} day${h.split_days === 1 ? "" : "s"} split into two records (this is what shows "Out Missing")`,
+    h.wrong_day_records && `${h.wrong_day_records} record${h.wrong_day_records === 1 ? "" : "s"} saved with the old date format`,
+    h.uncorrected_punches && `${h.uncorrected_punches} machine punch${h.uncorrected_punches === 1 ? "" : "es"} not yet corrected by ${offset > 0 ? "+" : ""}${offset} min`,
+  ].filter(Boolean) : [];
+  const s = preview?.stats;
+
+  return (
+    <Card className="flex flex-col gap-4 p-5 lg:col-span-2">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <CardTitle className="flex items-center gap-2"><ShieldCheck className="size-5 text-brand-600 dark:text-brand-400" aria-hidden /> Check & fix data</CardTitle>
+          <Muted>Checks the last 90 days for split days, old date formats and uncorrected machine times.</Muted>
+        </div>
+        <Button size="sm" onClick={check}>Check again</Button>
+      </div>
+
+      {!h ? <Spinner label="Checking…" /> : h.error ? <Empty>{h.error}</Empty> : !h.needs_repair ? (
+        <p className="flex items-center gap-2 rounded-xl bg-emerald-50 p-3 text-sm font-semibold text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300">
+          <CheckCircle2 className="size-4" aria-hidden /> Everything looks right. Nothing needs fixing.
+        </p>
+      ) : (
+        <div className="flex flex-col gap-3">
+          <ul className="flex flex-col gap-1.5 rounded-xl bg-amber-50 p-3 text-sm text-amber-800 dark:bg-amber-500/10 dark:text-amber-200">
+            {issues.map((t) => <li key={t} className="flex gap-2"><TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden />{t}</li>)}
+          </ul>
+          {offset !== 0 && h.uncorrected_punches > 0 && (
+            <Checkbox checked={correctClock} onChange={(e) => setCorrectClock(e.target.checked)}
+              label={`Also correct old machine punches by ${offset > 0 ? "+" : ""}${offset} min (each punch only once)`} />
+          )}
+          <div className="flex flex-wrap gap-2">
+            <Button icon={Wrench} loading={busy === "preview"} onClick={() => run(false)}>Preview the fix</Button>
+          </div>
+        </div>
+      )}
+
+      {preview && (
+        <div className="flex flex-col gap-3 rounded-xl border border-zinc-200 p-4 dark:border-zinc-700">
+          <b>What the fix will change ({s.days} person-days checked)</b>
+          <ul className="grid gap-1 text-sm sm:grid-cols-2">
+            <li>Split days joined: <b>{s.merged}</b></li>
+            <li>Moved to the correct day: <b>{s.dateMoved}</b></li>
+            <li>Login / logout / hours recalculated: <b>{s.timesChanged}</b></li>
+            <li>Status recalculated: <b>{s.statusChanged}</b></li>
+            {preview.clockOffsetMin !== 0 && <li>Machine punches corrected: <b>{s.punchesShifted}</b></li>}
+            <li>Already correct: <b>{s.untouched}</b></li>
+          </ul>
+          {Object.keys(preview.transitions).length > 0 && (
+            <Muted>Status changes: {Object.entries(preview.transitions).map(([t, n]) => `${t} (${n})`).join(", ")}</Muted>
+          )}
+          <Muted>Days an admin marked by hand aren't changed. A backup is saved first, so you can undo.</Muted>
+          <div className="flex flex-wrap gap-2">
+            <Button variant="primary" icon={Wrench} loading={busy === "apply"} disabled={!preview.changes} onClick={() => run(true)}>
+              {preview.changes ? `Apply ${preview.changes} change${preview.changes === 1 ? "" : "s"}` : "Nothing to change"}
+            </Button>
+            <Button variant="ghost" onClick={() => setPreview(null)}>Cancel</Button>
+          </div>
+        </div>
+      )}
+
+      {lastBackup && (
+        <div className="flex flex-wrap items-center justify-between gap-2 text-sm text-zinc-500">
+          <span>Last fix can be undone (backup {lastBackup}).</span>
+          <Button size="sm" variant="ghost" icon={RotateCcw} loading={busy === "undo"} onClick={undo}>Undo last fix</Button>
+        </div>
+      )}
     </Card>
   );
 }
