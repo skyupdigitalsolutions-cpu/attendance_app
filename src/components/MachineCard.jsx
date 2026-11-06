@@ -1,13 +1,13 @@
 // Fingerprint machine: status, its enrolled users (linked or not), and two actions:
 // "Get users from machine" and "Re-send punches" for dates that are missing.
-import { useCallback, useEffect, useState } from "react";
-import { CheckCircle2, Clock, Download, Fingerprint, RefreshCw, Users, Wifi, WifiOff, XCircle } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { CheckCircle2, Clock, Download, Eraser, Fingerprint, Power, RefreshCw, TriangleAlert, Upload, Users, Wifi, WifiOff, X, XCircle } from "lucide-react";
 import { addDays, api, timeAgo, todayLocal } from "../lib/core";
 import { Badge, Button, Card, CardTitle, Empty, Field, Input, Muted, Select, Spinner, cx, useToast } from "./ui";
 import { UserPlus } from "lucide-react";
 import CreateFromMachine from "./CreateFromMachine";
 
-const CMD_TONE = { queued: ["Waiting for the machine", "late"], sent: ["Sent, waiting for reply", "info"], done: ["Done", "present"], failed: ["Machine refused", "absent"] };
+const CMD_TONE = { queued: ["Waiting for the machine", "late"], sent: ["Sent, waiting for the machine", "info"], done: ["Done", "present"], failed: ["Not answered", "absent"] };
 
 export default function MachineCard({ people, onLink, linkedNow, onDiscard, refreshKey, onCreated }) {
   const toast = useToast();
@@ -19,13 +19,39 @@ export default function MachineCard({ people, onLink, linkedNow, onDiscard, refr
   const [picked, setPicked] = useState(new Set());
   const [creating, setCreating] = useState(null); // machine users to create
 
-  const load = useCallback(async () => {
-    try { setData((await api("/attendance-app/machine")).data); setError(""); } catch (e) { setError(e.message); }
-  }, []);
+  const [refreshing, setRefreshing] = useState(false);
+  const [updatedAt, setUpdatedAt] = useState(null);
+  const prevUsers = useRef(null);
+  const load = useCallback(async (manual = false) => {
+    if (manual) setRefreshing(true);
+    try {
+      const d = (await api("/attendance-app/machine")).data;
+      // Tell the admin when new data from the machine has arrived since the last look
+      const total = d.devices.reduce((a, x) => a + (x.users_count || 0), 0);
+      if (prevUsers.current != null && total > prevUsers.current) toast(`The machine sent its user list: ${total} users.`);
+      prevUsers.current = total;
+      setData(d); setError(""); setUpdatedAt(new Date());
+      if (manual) toast("Machine status updated.");
+    } catch (e) { setError(e.message); if (manual) toast(e.message); }
+    finally { if (manual) setRefreshing(false); }
+  }, [toast]);
   useEffect(() => { load(); }, [load, refreshKey]);
+  // Keep the status fresh while the screen is open (every 30 s)
+  useEffect(() => { const t = setInterval(() => load(), 30000); return () => clearInterval(t); }, [load]);
   // While a command is waiting, refresh every 8 s so its status updates by itself
   const waiting = data?.devices.some((d) => d.commands.some((c) => c.status === "queued" || c.status === "sent"));
-  useEffect(() => { if (!waiting) return; const t = setInterval(load, 8000); return () => clearInterval(t); }, [waiting, load]);
+  useEffect(() => { if (!waiting) return; const t = setInterval(() => load(), 8000); return () => clearInterval(t); }, [waiting, load]);
+
+  const clearRequests = async (serial, id) => {
+    try {
+      await api("/attendance-app/machine/clear-requests", { method: "POST", body: { serial, ...(id != null ? { id } : {}) } });
+      // Remove from the screen right away, then reload
+      setData((x) => x && { ...x, devices: x.devices.map((dv) => dv.serial !== serial ? dv : {
+        ...dv, commands: dv.commands.filter((c) => (id != null ? c.id !== id : !(c.status === "done" || c.status === "failed"))) }) });
+      toast(id != null ? "Request cleared." : "Finished requests cleared.");
+      load();
+    } catch (e) { toast(e.message); }
+  };
 
   const send = async (path, body, done) => {
     setBusy(path);
@@ -46,7 +72,10 @@ export default function MachineCard({ people, onLink, linkedNow, onDiscard, refr
           <CardTitle className="flex items-center gap-2"><Fingerprint className="size-5 text-brand-600 dark:text-brand-400" aria-hidden /> Fingerprint machine</CardTitle>
           <Muted>Get the machine's user list to see who isn't linked yet, and ask it to re-send punches for days that are missing.</Muted>
         </div>
-        <Button size="sm" icon={RefreshCw} onClick={load}>Refresh</Button>
+        <span className="flex items-center gap-2">
+          {updatedAt && <span className="text-xs text-zinc-400">Updated {updatedAt.toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit", second: "2-digit" })}</span>}
+          <Button size="sm" icon={RefreshCw} loading={refreshing} onClick={() => load(true)}>Refresh</Button>
+        </span>
       </div>
 
       {!data.devices.length ? (
@@ -62,20 +91,43 @@ export default function MachineCard({ people, onLink, linkedNow, onDiscard, refr
             <span className="text-zinc-500">Last contact {d.last_seen ? timeAgo(d.last_seen) : "never"}</span>
             <span className="text-zinc-500">Last punches {d.last_punches_at ? `${timeAgo(d.last_punches_at)} (${d.last_punches_count})` : "—"}</span>
             <span className="text-zinc-500">{d.users_count ? `${d.users_count} users on the machine` : "User list not fetched yet"}</span>
+            {d.last_handshake_at && <span className="text-zinc-500">Last reconnect {timeAgo(d.last_handshake_at)}</span>}
           </div>
+          <NoReplyHelp d={d} busy={busy} send={send} />
           {d.commands.length > 0 && (
-            <ul className="flex flex-col gap-1 text-sm">
-              {d.commands.slice(0, 4).map((c) => {
-                const [label, tone] = CMD_TONE[c.status] || [c.status, "neutral"];
-                return (
-                  <li key={c.id} className="flex flex-wrap items-center gap-2">
-                    {c.status === "done" ? <CheckCircle2 className="size-4 text-emerald-600" aria-hidden /> : c.status === "failed" ? <XCircle className="size-4 text-rose-500" aria-hidden /> : <Clock className="size-4 text-amber-500" aria-hidden />}
-                    <span>{c.label}</span><Badge tone={tone}>{label}</Badge>
-                    <span className="text-xs text-zinc-400">{timeAgo(c.created_at)}{c.created_by ? `, ${c.created_by}` : ""}</span>
-                  </li>
-                );
-              })}
-            </ul>
+            <div className="flex flex-col gap-1">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-bold text-zinc-500">Requests to the machine</span>
+                {d.commands.some((c) => c.status === "done" || c.status === "failed") && (
+                  <Button size="sm" variant="ghost" icon={Eraser} className="h-7 px-2 text-xs"
+                    onClick={() => clearRequests(d.serial)}>Clear finished</Button>
+                )}
+              </div>
+              <ul className="flex flex-col gap-1 text-sm">
+                {d.commands.slice(0, 5).map((c) => {
+                  const [label, tone] = CMD_TONE[c.status] || [c.status, "neutral"];
+                  const finished = c.status === "done" || c.status === "failed";
+                  return (
+                    <li key={c.id} className="flex flex-wrap items-center gap-2">
+                      {c.status === "done" ? <CheckCircle2 className="size-4 text-emerald-600" aria-hidden /> : c.status === "failed" ? <XCircle className="size-4 text-rose-500" aria-hidden /> : <Clock className="size-4 text-amber-500" aria-hidden />}
+                      <span>{c.label}</span><Badge tone={tone}>{label}</Badge>
+                      {c.result && c.result.startsWith("Machine sent") && <span className="text-xs font-semibold text-emerald-700 dark:text-emerald-300">{c.result}</span>}
+                      {c.status === "failed" && <span className="text-xs text-zinc-500">{c.result}</span>}
+                      <span className="text-xs text-zinc-400">{timeAgo(c.created_at)}{c.created_by ? `, ${c.created_by}` : ""}</span>
+                      {finished && (
+                        <button type="button" onClick={() => clearRequests(d.serial, c.id)} aria-label={`Clear "${c.label}"`}
+                          className="ml-auto rounded-md p-1 text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-200">
+                          <X className="size-3.5" aria-hidden />
+                        </button>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+              {d.commands.some((c) => c.status === "done" || c.status === "failed") && (
+                <span className="text-xs text-zinc-400">Finished requests disappear by themselves 10 minutes after they finish.</span>
+              )}
+            </div>
           )}
         </div>
       ))}
@@ -85,8 +137,9 @@ export default function MachineCard({ people, onLink, linkedNow, onDiscard, refr
           <div className="flex flex-col gap-2 rounded-xl bg-zinc-50 p-3 dark:bg-zinc-800/50">
             <b className="flex items-center gap-2"><Users className="size-4" aria-hidden /> Users on the machine</b>
             <Muted>Asks the machine for everyone enrolled on it, with the names saved on the machine.</Muted>
-            <div><Button icon={Download} loading={busy === "/attendance-app/machine/fetch-users"}
-              onClick={() => send("/attendance-app/machine/fetch-users", {}, "Asked the machine for its user list. It answers within a minute.")}>Get users from machine</Button></div>
+            <div><Button icon={Download} loading={busy === "/attendance-app/machine/fetch-users"} disabled={data.devices.some((x) => x.users_pending)}
+              onClick={() => send("/attendance-app/machine/fetch-users", {}, "Asked the machine for its user list. It usually answers within a few minutes.")}>
+              {data.devices.some((x) => x.users_pending) ? "Waiting for the machine…" : "Get users from machine"}</Button></div>
           </div>
           <div className="flex flex-col gap-2 rounded-xl bg-zinc-50 p-3 dark:bg-zinc-800/50">
             <b className="flex items-center gap-2"><RefreshCw className="size-4" aria-hidden /> Re-send missing punches</b>
@@ -94,8 +147,9 @@ export default function MachineCard({ people, onLink, linkedNow, onDiscard, refr
             <div className="flex flex-wrap items-end gap-2">
               <Field label="From"><Input type="date" value={from} max={to} onChange={(e) => setFrom(e.target.value)} className="h-10" /></Field>
               <Field label="To"><Input type="date" value={to} min={from} max={todayLocal()} onChange={(e) => setTo(e.target.value)} className="h-10" /></Field>
-              <Button icon={RefreshCw} loading={busy === "/attendance-app/machine/resync"}
-                onClick={() => send("/attendance-app/machine/resync", { from, to }, "Asked the machine to re-send punches. They arrive within a few minutes.")}>Re-send</Button>
+              <Button icon={RefreshCw} loading={busy === "/attendance-app/machine/resync"} disabled={data.devices.some((x) => x.punches_pending)}
+                onClick={() => send("/attendance-app/machine/resync", { from, to }, "Asked the machine to re-send punches. They arrive within a few minutes.")}>
+                {data.devices.some((x) => x.punches_pending) ? "Waiting…" : "Re-send"}</Button>
             </div>
           </div>
         </div>
@@ -161,5 +215,40 @@ export default function MachineCard({ people, onLink, linkedNow, onDiscard, refr
         onCreated={() => { setPicked(new Set()); load(); onCreated?.(); }}
       />
     </Card>
+  );
+}
+
+// Shown when the machine received a request but didn't answer for 3+ minutes
+// (older eSSL firmware ignores the newer requests), or while a full upload is pending.
+function NoReplyHelp({ d, busy, send }) {
+  const stuck = d.commands.some((c) => c.status === "sent" && !c.result && c.sent_at && Date.now() - new Date(c.sent_at) > 3 * 60 * 1000 && c.cmd !== "REBOOT");
+  const pendingFull = d.resend_all;
+  const fullWaitLong = pendingFull && d.resend_all_requested_at && Date.now() - new Date(d.resend_all_requested_at) > 10 * 60 * 1000;
+  if (!stuck && !pendingFull) return null;
+  return (
+    <div className="flex flex-col gap-2 rounded-xl bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-500/10 dark:text-amber-100">
+      {pendingFull ? (
+        <p className="flex gap-2"><Clock className="mt-0.5 size-4 shrink-0" aria-hidden />
+          <span>Waiting for the machine to reconnect and upload all its punches and users again
+            {d.resend_all_requested_at ? ` (asked ${timeAgo(d.resend_all_requested_at)})` : ""}.
+            {fullWaitLong ? " It hasn't reconnected yet: restart it to make it reconnect now." : " This usually happens within a few minutes."}</span></p>
+      ) : (
+        <p className="flex gap-2"><TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden />
+          <span>The machine received the request but didn't answer. Older eSSL firmware doesn't support it.
+            Use <b>Upload everything again</b> instead: at its next connection the machine re-sends all punches and users (punches already saved are ignored).</span></p>
+      )}
+      <div className="flex flex-wrap gap-2">
+        {!pendingFull && <Button size="sm" variant="primary" icon={Upload} loading={busy === "/attendance-app/machine/full-upload"}
+          onClick={() => send("/attendance-app/machine/full-upload", { serial: d.serial }, "Asked the machine to upload everything again at its next connection.")}>Upload everything again</Button>}
+        {(fullWaitLong || stuck) && <Button size="sm" icon={Power} loading={busy === "/attendance-app/machine/restart"}
+          onClick={() => { if (confirm("Restart the fingerprint machine? It's unavailable for about a minute; punches made during the restart are saved on it and sent afterwards.")) send("/attendance-app/machine/restart", { serial: d.serial }, "Restart sent. The machine reconnects in about a minute."); }}>Restart machine</Button>}
+      </div>
+      {d.unknown_calls?.length > 0 && (
+        <details className="text-xs text-amber-800 dark:text-amber-200/80">
+          <summary className="cursor-pointer font-semibold">Other calls from the machine (for support)</summary>
+          <ul className="mt-1 flex flex-col gap-0.5 font-mono">{d.unknown_calls.map((u, i) => <li key={i} className="break-all">{u}</li>)}</ul>
+        </details>
+      )}
+    </div>
   );
 }
