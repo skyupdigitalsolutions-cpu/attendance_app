@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Fingerprint, Save, Search, Trash2, Undo2 } from "lucide-react";
 import { api, fmtDay, fmtTime, ymdOfStored } from "../lib/core";
 import { useApp } from "../lib/app";
+import MachineCard from "../components/MachineCard";
 import { Avatar, Badge, Button, Card, CardTitle, Chip, Empty, Input, Muted, Select, Spinner, cx, useToast } from "../components/ui";
 
 export default function Ids() {
@@ -13,14 +14,16 @@ export default function Ids() {
   const [q, setQ] = useState("");
   const [onlyMissing, setOnlyMissing] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [error, setError] = useState("");
 
   const load = useCallback(async () => {
-    setPeople(null);
+    setPeople(null); setError("");
     try {
       const j = await api("/attendance-app/ids");
       setPeople(j.data || []); setUnassigned(j.unassigned || []); setEdits({});
-    } catch (e) { setPeople([]); toast(e.message); }
-  }, [toast]);
+    } catch (e) { setError(e.message); }
+  }, []);
   useEffect(() => { load(); }, [load]);
 
   const val = (p, f) => (edits[p._id]?.[f] ?? p[f] ?? "") || "";
@@ -70,7 +73,7 @@ export default function Ids() {
   };
   const discard = async (deviceId) => {
     if (!confirm(`Discard the kept punches for Device ID ${deviceId}? Use this only for test or wrong enrolments.`)) return;
-    try { await api(`/attendance-app/ids/unassigned/${encodeURIComponent(deviceId)}`, { method: "DELETE" }); toast("Discarded."); load(); }
+    try { await api(`/attendance-app/ids/unassigned/${encodeURIComponent(deviceId)}`, { method: "DELETE" }); toast("Discarded."); load(); setRefreshKey((k) => k + 1); }
     catch (e) { toast(e.message); }
   };
   const save = async () => {
@@ -81,44 +84,24 @@ export default function Ids() {
       const imp = j.imported || [];
       toast(`Saved ${j.updated} ${j.updated === 1 ? "person" : "people"}.` +
         (imp.length ? ` Imported ${imp.map((i) => `${i.punches} earlier punches for Device ID ${i.device_id} into ${i.user}`).join("; ")}.` : ""));
-      invalidateUsers(); load();
+      invalidateUsers(); load(); setRefreshKey((k) => k + 1);
     } catch (e) { toast(e.message); } finally { setSaving(false); }
   };
 
+  if (error) return <Card className="p-2"><Empty>{error}</Empty></Card>;
   if (!people) return <Card><Spinner /></Card>;
   const options = [...people].filter((p) => p.status !== "inactive")
     .sort((a, b) => (!!val(a, "fingerprint_id") - !!val(b, "fingerprint_id")) || a.name.localeCompare(b.name));
 
   return (
     <div className="flex flex-col gap-3 pb-24">
-      {unassigned.length > 0 && (
-        <Card className="p-4">
-          <CardTitle className="flex items-center gap-2"><Fingerprint className="size-5 text-amber-500" aria-hidden /> Unassigned machine IDs</CardTitle>
-          <Muted className="mt-1">The fingerprint machine sent punches for these IDs, but nobody has them yet. Assign each to a person and their earlier punches are added to that person's attendance when you save.</Muted>
-          <ul className="mt-2">
-            {unassigned.map((u) => {
-              const staged = people.find((p) => edits[p._id] && val(p, "fingerprint_id") === u.device_id);
-              return (
-                <li key={u.device_id} className="grid grid-cols-[1fr_auto] items-center gap-x-3 gap-y-2 border-t border-zinc-100 py-3 first:border-0 sm:grid-cols-[auto_1fr_auto_auto] dark:border-zinc-800">
-                  <span>Device ID <b className="text-lg tabular-nums">{u.device_id}</b></span>
-                  <Muted as="span" className="col-span-2 sm:col-span-1">
-                    {u.punches} {u.punches === 1 ? "punch" : "punches"}, last {fmtDay(ymdOfStored(u.last_seen), { day: "numeric", month: "short" })} {fmtTime(u.last_seen)}
-                  </Muted>
-                  {staged ? (
-                    <span className="text-sm text-emerald-700 dark:text-emerald-300">Will go to <b>{staged.name}</b> when you save</span>
-                  ) : (
-                    <Select aria-label={`Assign Device ID ${u.device_id} to`} value="" onChange={(e) => e.target.value && assign(u.device_id, e.target.value)} className="h-10 sm:w-64">
-                      <option value="">Assign to…</option>
-                      {options.map((p) => <option key={p._id} value={p._id}>{p.name}{val(p, "fingerprint_id") ? ` (has Device ID ${val(p, "fingerprint_id")})` : ""}</option>)}
-                    </Select>
-                  )}
-                  <Button size="sm" variant="danger" icon={Trash2} onClick={() => discard(u.device_id)}>Discard</Button>
-                </li>
-              );
-            })}
-          </ul>
-        </Card>
-      )}
+      <MachineCard
+        people={people}
+        refreshKey={refreshKey}
+        onLink={assign}
+        onDiscard={discard}
+        linkedNow={(pin) => people.find((p) => edits[p._id] && val(p, "fingerprint_id") === pin)?.name}
+      />
 
       <Card className="p-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
@@ -172,7 +155,7 @@ export default function Ids() {
 
       {nChanged > 0 && (
         <div className="sticky bottom-[calc(0.75rem+env(safe-area-inset-bottom))] z-20">
-          <Card className="flex flex-wrap items-center justify-between gap-3 bg-white/95 px-4 py-3 shadow-lg dark:bg-zinc-900/95">
+          <Card className="flex flex-wrap items-center justify-between gap-3 bg-white! px-4 py-3 shadow-lg dark:bg-zinc-900!">
             <span className="font-bold">
               {hasDup
                 ? `Fix the duplicate ${[...dup.employee_id].map((v) => `Employee ID ${v}`).concat([...dup.fingerprint_id].map((v) => `Device ID ${v}`)).join(", ")} before saving.`

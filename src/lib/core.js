@@ -43,6 +43,9 @@ export async function api(path, { method = "GET", params, body, timeout = 20000 
     onExpired();
     throw new Error("Your session ended. Sign in again.");
   }
+  if (res.status === 404 && path.startsWith("/attendance-app")) {
+    throw new Error("The server doesn't have the Attendance Admin update yet. Deploy the backend files (attendance-app routes) and restart the server.");
+  }
   if (!res.ok) throw new Error(json.message || `Request failed (${res.status})`);
   return json;
 }
