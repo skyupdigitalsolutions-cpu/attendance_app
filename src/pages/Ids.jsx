@@ -18,7 +18,7 @@ export default function Ids() {
   const [error, setError] = useState("");
 
   const load = useCallback(async () => {
-    setPeople(null); setError("");
+    setError(""); // keep the current list on screen while refreshing (so open dialogs stay open)
     try {
       const j = await api("/attendance-app/ids");
       setPeople(j.data || []); setUnassigned(j.unassigned || []); setEdits({});
@@ -100,6 +100,7 @@ export default function Ids() {
         refreshKey={refreshKey}
         onLink={assign}
         onDiscard={discard}
+        onCreated={() => { invalidateUsers(); load(); }}
         linkedNow={(pin) => people.find((p) => edits[p._id] && val(p, "fingerprint_id") === pin)?.name}
       />
 

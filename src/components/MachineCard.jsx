@@ -4,16 +4,20 @@ import { useCallback, useEffect, useState } from "react";
 import { CheckCircle2, Clock, Download, Fingerprint, RefreshCw, Users, Wifi, WifiOff, XCircle } from "lucide-react";
 import { addDays, api, timeAgo, todayLocal } from "../lib/core";
 import { Badge, Button, Card, CardTitle, Empty, Field, Input, Muted, Select, Spinner, cx, useToast } from "./ui";
+import { UserPlus } from "lucide-react";
+import CreateFromMachine from "./CreateFromMachine";
 
 const CMD_TONE = { queued: ["Waiting for the machine", "late"], sent: ["Sent, waiting for reply", "info"], done: ["Done", "present"], failed: ["Machine refused", "absent"] };
 
-export default function MachineCard({ people, onLink, linkedNow, onDiscard, refreshKey }) {
+export default function MachineCard({ people, onLink, linkedNow, onDiscard, refreshKey, onCreated }) {
   const toast = useToast();
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
   const [from, setFrom] = useState(addDays(todayLocal(), -6));
   const [to, setTo] = useState(todayLocal());
   const [busy, setBusy] = useState("");
+  const [picked, setPicked] = useState(new Set());
+  const [creating, setCreating] = useState(null); // machine users to create
 
   const load = useCallback(async () => {
     try { setData((await api("/attendance-app/machine")).data); setError(""); } catch (e) { setError(e.message); }
@@ -99,17 +103,35 @@ export default function MachineCard({ people, onLink, linkedNow, onDiscard, refr
 
       {data.users.length > 0 && (
         <div className="flex flex-col gap-2">
-          <p className="text-sm font-semibold">
-            <span className="text-emerald-700 dark:text-emerald-300">{linked} linked to an employee</span>
-            {notLinked.length > 0 && <span className="text-rose-600 dark:text-rose-400">, {notLinked.length} not linked (their punches don't reach anyone's attendance)</span>}
-          </p>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-sm font-semibold">
+              <span className="text-emerald-700 dark:text-emerald-300">{linked} linked to an employee</span>
+              {notLinked.length > 0 && <span className="text-rose-600 dark:text-rose-400">, {notLinked.length} not linked (their punches don't reach anyone's attendance)</span>}
+            </p>
+            {notLinked.length > 0 && (
+              <span className="flex flex-wrap gap-2">
+                <Button size="sm" variant="ghost" onClick={() => setPicked(picked.size === notLinked.length ? new Set() : new Set(notLinked.map((u) => u.pin)))}>
+                  {picked.size === notLinked.length ? "Clear selection" : "Select all"}
+                </Button>
+                <Button size="sm" variant="primary" icon={UserPlus} disabled={!picked.size}
+                  onClick={() => setCreating(notLinked.filter((u) => picked.has(u.pin)))}>
+                  Create employee{picked.size === 1 ? "" : "s"}{picked.size ? ` (${picked.size})` : ""}
+                </Button>
+              </span>
+            )}
+          </div>
+          {notLinked.length > 0 && <Muted>Not in your employee list yet? Tick them and press Create employees. Already an employee? Use Link to employee.</Muted>}
           {notLinked.length > 0 && (
             <ul className="rounded-xl border border-zinc-200 dark:border-zinc-700">
               {notLinked.map((u) => {
                 const staged = linkedNow(u.pin);
                 return (
-                  <li key={u.pin} className="grid grid-cols-[1fr_auto] items-center gap-x-3 gap-y-2 border-t border-zinc-100 px-3 py-2.5 first:border-0 sm:grid-cols-[6rem_1fr_auto] dark:border-zinc-800">
-                    <span>Device ID <b className="tabular-nums">{u.pin}</b></span>
+                  <li key={u.pin} className="grid grid-cols-[1fr_auto] items-center gap-x-3 gap-y-2 border-t border-zinc-100 px-3 py-2.5 first:border-0 sm:grid-cols-[8rem_1fr_auto] dark:border-zinc-800">
+                    <label className="flex cursor-pointer items-center gap-2">
+                      <input type="checkbox" className="size-5 accent-brand-600" checked={picked.has(u.pin)} aria-label={`Select Device ID ${u.pin}`}
+                        onChange={() => setPicked((s) => { const n = new Set(s); n.has(u.pin) ? n.delete(u.pin) : n.add(u.pin); return n; })} />
+                      <span>Device ID <b className="tabular-nums">{u.pin}</b></span>
+                    </label>
                     <span className="min-w-0 text-sm">
                       <b>{u.name || "No name on the machine"}</b>
                       {u.unassigned_punches > 0 && <span className="text-zinc-500">, {u.unassigned_punches} punch{u.unassigned_punches === 1 ? "" : "es"} kept</span>}
@@ -120,6 +142,7 @@ export default function MachineCard({ people, onLink, linkedNow, onDiscard, refr
                           <option value="">Link to employee…</option>
                           {options.map((p) => <option key={p._id} value={p._id}>{p.name}{p.fingerprint_id ? ` (has Device ID ${p.fingerprint_id})` : ""}</option>)}
                         </Select>
+                        <Button size="sm" icon={UserPlus} onClick={() => setCreating([u])} aria-label={`Create employee for Device ID ${u.pin}`}><span className="max-sm:sr-only">Create</span></Button>
                         {u.unassigned_punches > 0 && !u.machines.length && <Button size="sm" variant="danger" onClick={() => onDiscard(u.pin)}>Discard</Button>}
                       </span>
                     )}
@@ -130,6 +153,13 @@ export default function MachineCard({ people, onLink, linkedNow, onDiscard, refr
           )}
         </div>
       )}
+      <CreateFromMachine
+        open={Boolean(creating)}
+        onClose={() => setCreating(null)}
+        machineUsers={creating || []}
+        people={people}
+        onCreated={() => { setPicked(new Set()); load(); onCreated?.(); }}
+      />
     </Card>
   );
 }
