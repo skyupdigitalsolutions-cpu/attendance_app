@@ -65,12 +65,12 @@ export default function Ids() {
     return <Badge tone="present">Ready</Badge>;
   };
 
-  const assign = (deviceId, userId) => {
+  const assign = (deviceId, userId, quiet = false) => {
     const p = people.find((x) => x._id === userId);
     if (!p) return;
     if (val(p, "fingerprint_id") && !confirm(`${p.name} already has Device ID ${val(p, "fingerprint_id")}. Replace it with ${deviceId}?`)) return;
     setVal(p, "fingerprint_id", deviceId);
-    toast(`Device ID ${deviceId} set for ${p.name}. Save to import their earlier punches.`);
+    if (!quiet) toast(`Device ID ${deviceId} set for ${p.name}. Press Save changes to import their earlier punches.`);
   };
   const discard = async (deviceId) => {
     if (!confirm(`Discard the kept punches for Device ID ${deviceId}? Use this only for test or wrong enrolments.`)) return;
@@ -98,6 +98,7 @@ export default function Ids() {
     <div className="flex flex-col gap-3 pb-24">
       <MachineCard
         people={people}
+        isFree={(p) => !val(p, "fingerprint_id")}
         refreshKey={refreshKey}
         onLink={assign}
         onDiscard={discard}

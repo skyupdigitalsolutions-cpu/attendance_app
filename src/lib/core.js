@@ -135,3 +135,55 @@ export function downloadCsv(filename, headers, rows) {
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 2000);
 }
+// ── Matching machine names to existing employees ─────────────────────────────
+// The name on the fingerprint machine is often short or a nickname ("Yashu" for
+// "Yashaswi"). Score how well it fits an employee name: 1 = same, 0 = unrelated.
+const normName = (s) => String(s || "").toLowerCase().replace(/[^a-z\s]/g, " ").replace(/\s+/g, " ").trim();
+const editDistance = (a, b) => {
+  const d = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)]);
+  for (let j = 1; j <= b.length; j++) d[0][j] = j;
+  for (let i = 1; i <= a.length; i++) for (let j = 1; j <= b.length; j++)
+    d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+  return d[a.length][b.length];
+};
+const tokenScore = (a, b) => {
+  if (a === b) return 1;
+  const [s, l] = a.length <= b.length ? [a, b] : [b, a];
+  if (s.length >= 3 && l.startsWith(s)) return 0.85;                 // "poojak" / "pooja"
+  let cp = 0; while (cp < s.length && s[cp] === l[cp]) cp++;
+  if (cp >= 3 && cp / s.length >= 0.75) return 0.7;                  // "yashu" / "yashaswi"
+  const r = 1 - editDistance(a, b) / Math.max(a.length, b.length);   // small typos
+  return r >= 0.75 ? r * 0.9 : 0;
+};
+export function nameScore(machineName, employeeName) {
+  const x = normName(machineName).split(" ").filter(Boolean), y = normName(employeeName).split(" ").filter(Boolean);
+  if (!x.length || !y.length) return 0;
+  if (x.join("") === y.join("")) return 1;
+  const [s, l] = x.length <= y.length ? [x, y] : [y, x];
+  const sum = s.reduce((acc, t) => acc + Math.max(0, ...l.map((u) => tokenScore(t, u))), 0);
+  let score = sum / (s.length + 0.5 * (l.length - s.length));
+  // First name + last-name initial run together: "Poojak" for "Pooja Kadwadi"
+  if (s.length === 1 && l.length > 1 && l[0].length >= 3 && s[0].startsWith(l[0]) && s[0].length > l[0].length) {
+    const rest = s[0].slice(l[0].length), tail = l.slice(1).join("");
+    score = Math.max(score, tail.startsWith(rest) ? 0.8 : 0.62);
+  }
+  return score;
+}
+// Best one-to-one match between unlinked machine users and free employees.
+// Returns Map(pin -> { person, score, ambiguous }). Nobody is suggested twice.
+export function suggestLinks(machineUsers, candidates, minScore = 0.6) {
+  const pairs = [];
+  for (const u of machineUsers) for (const p of candidates) {
+    const score = nameScore(u.name, p.name);
+    if (score >= minScore) pairs.push({ pin: u.pin, person: p, score });
+  }
+  pairs.sort((a, b) => b.score - a.score);
+  const usedPin = new Set(), usedPerson = new Set(), out = new Map();
+  for (const c of pairs) {
+    if (usedPin.has(c.pin) || usedPerson.has(c.person._id)) continue;
+    usedPin.add(c.pin); usedPerson.add(c.person._id);
+    const rival = pairs.find((x) => x.pin === c.pin && x.person._id !== c.person._id && !usedPerson.has(x.person._id) && c.score - x.score < 0.08);
+    out.set(c.pin, { person: c.person, score: c.score, ambiguous: Boolean(rival) });
+  }
+  return out;
+}

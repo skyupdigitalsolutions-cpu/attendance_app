@@ -2,14 +2,14 @@
 // "Get users from machine" and "Re-send punches" for dates that are missing.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { CheckCircle2, Clock, Download, Eraser, Fingerprint, Power, RefreshCw, TriangleAlert, Upload, Users, Wifi, WifiOff, X, XCircle } from "lucide-react";
-import { addDays, api, EMAIL_RE, emailMissing, timeAgo, todayLocal } from "../lib/core";
+import { addDays, api, EMAIL_RE, emailMissing, suggestLinks, timeAgo, todayLocal } from "../lib/core";
 import { Badge, Button, Card, CardTitle, Empty, Field, Input, Muted, Select, Spinner, cx, useToast } from "./ui";
-import { UserPlus } from "lucide-react";
+import { Link2, UserPlus } from "lucide-react";
 import CreateFromMachine from "./CreateFromMachine";
 
 const CMD_TONE = { queued: ["Waiting for the machine", "late"], sent: ["Sent, waiting for the machine", "info"], done: ["Done", "present"], failed: ["Not answered", "absent"] };
 
-export default function MachineCard({ people, onLink, linkedNow, onDiscard, refreshKey, onCreated }) {
+export default function MachineCard({ people, isFree, onLink, linkedNow, onDiscard, refreshKey, onCreated }) {
   const toast = useToast();
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
@@ -21,6 +21,7 @@ export default function MachineCard({ people, onLink, linkedNow, onDiscard, refr
   const [creating, setCreating] = useState(null); // machine users to create
   const [names, setNames] = useState({});           // typed names per machine number
   const [emails, setEmails] = useState({});         // typed emails per machine number (required)
+  const [newOpen, setNewOpen] = useState(new Set());   // rows where the admin chose "add as a new employee"
   const nameOf = (u) => (names[u.pin] ?? u.name ?? "").trim();
   const emailOf = (u) => (emails[u.pin] ?? "").trim();
 
@@ -89,6 +90,11 @@ export default function MachineCard({ people, onLink, linkedNow, onDiscard, refr
   const notLinked = data.users.filter((u) => !u.employee);
   const linked = data.users.length - notLinked.length;
   const options = [...people].filter((p) => p.status !== "inactive").sort((a, b) => a.name.localeCompare(b.name));
+  // Best existing employee for each unlinked machine name (only people without a Device ID yet)
+  const toMatch = notLinked.filter((u) => !linkedNow(u.pin));
+  const matches = suggestLinks(toMatch, options.filter((p) => (isFree ? isFree(p) : !p.fingerprint_id) && !emailMissing(p)));
+  const sure = [...matches].filter(([, m]) => !m.ambiguous);
+  const linkAll = () => { sure.forEach(([pin, m]) => onLink(pin, m.person._id, true)); toast(`${sure.length} linked. Press Save changes to apply.`); };
 
   return (
     <Card className="flex flex-col gap-4 p-4">
@@ -192,6 +198,7 @@ export default function MachineCard({ people, onLink, linkedNow, onDiscard, refr
             </p>
             {notLinked.length > 0 && (
               <span className="flex flex-wrap gap-2">
+                {sure.length > 0 && <Button size="sm" variant="primary" icon={Link2} onClick={linkAll}>Link all matches ({sure.length})</Button>}
                 <Button size="sm" icon={UserPlus} loading={busy === "add-all"} onClick={() => {
                   const ready = notLinked.filter((u) => nameOf(u) && EMAIL_RE.test(emailOf(u)));
                   if (!ready.length) return toast("Enter a name and an email for each person first.");
@@ -207,40 +214,55 @@ export default function MachineCard({ people, onLink, linkedNow, onDiscard, refr
               </span>
             )}
           </div>
-          {notLinked.length > 0 && <Muted>Enter a name and <b>email</b> (required) and press <b>Add</b> so their punches count. Already an employee? Use <b>Link to</b>.</Muted>}
+          {notLinked.length > 0 && <Muted>Link each machine name to the <b>existing employee</b> it belongs to, then press <b>Save changes</b>. Only add a new employee if the person isn't in the list.</Muted>}
           {notLinked.length > 0 && (
             <ul className="rounded-xl border border-zinc-200 dark:border-zinc-700">
               {notLinked.map((u) => {
                 const staged = linkedNow(u.pin);
+                const m = matches.get(u.pin);
+                const adding = newOpen.has(u.pin);
                 return (
-                  <li key={u.pin} className="grid grid-cols-[1fr] items-center gap-x-3 gap-y-2 border-t border-zinc-100 px-3 py-2.5 first:border-0 sm:grid-cols-[8rem_1fr_auto] dark:border-zinc-800">
+                  <li key={u.pin} className="grid grid-cols-[1fr] items-center gap-x-3 gap-y-2 border-t border-zinc-100 px-3 py-2.5 first:border-0 sm:grid-cols-[8rem_1fr] dark:border-zinc-800">
                     <label className="flex cursor-pointer items-center gap-2">
                       <input type="checkbox" className="size-5 accent-brand-600" checked={picked.has(u.pin)} aria-label={`Select Device ID ${u.pin}`}
                         onChange={() => setPicked((s) => { const n = new Set(s); n.has(u.pin) ? n.delete(u.pin) : n.add(u.pin); return n; })} />
                       <span>Device ID <b className="tabular-nums">{u.pin}</b></span>
                     </label>
-                    <span className="flex min-w-0 flex-col gap-1 text-sm">
-                      <span className="flex min-w-0 items-center gap-2">
-                        <Input value={names[u.pin] ?? u.name ?? ""} placeholder="Name" maxLength={100} aria-label={`Name for Device ID ${u.pin}`}
-                          onChange={(e) => setNames((n) => ({ ...n, [u.pin]: e.target.value }))}
-                          className="h-10 min-w-0 flex-1" />
-                        <Input type="email" value={emails[u.pin] ?? ""} placeholder="Email (required)" aria-label={`Email for Device ID ${u.pin}`}
-                          onChange={(e) => setEmails((m) => ({ ...m, [u.pin]: e.target.value }))}
-                          onKeyDown={(e) => { if (e.key === "Enter") quickAdd([u]); }}
-                          className="h-10 min-w-0 flex-[1.3]" />
-                        <Button size="sm" variant="primary" icon={UserPlus} className="h-10 shrink-0" loading={busy === `add-${u.pin}`} onClick={() => quickAdd([u])}>Add</Button>
-                      </span>
-                      {u.unassigned_punches > 0 && <span className="text-xs text-zinc-500">{u.unassigned_punches} punch{u.unassigned_punches === 1 ? "" : "es"} waiting to count</span>}
+                    <span className="flex min-w-0 flex-col gap-2 text-sm">
+                      <span className="font-semibold">{u.name || <span className="text-zinc-500">No name on the machine</span>}
+                        {u.unassigned_punches > 0 && <span className="ml-2 text-xs font-normal text-zinc-500">{u.unassigned_punches} punch{u.unassigned_punches === 1 ? "" : "es"} waiting to count</span>}</span>
+                      {staged ? <span className="text-emerald-700 dark:text-emerald-300">Links to <b>{staged}</b> when you save</span> : (
+                        <>
+                          {m && (
+                            <span className="flex flex-wrap items-center gap-2 rounded-lg bg-emerald-50 px-2.5 py-1.5 dark:bg-emerald-500/10">
+                              <span className="min-w-0 flex-1">{m.ambiguous ? "Could be" : "Looks like"} <b>{m.person.name}</b>
+                                <span className="text-zinc-500">{m.person.employee_id ? ` (${m.person.employee_id})` : ""}{m.ambiguous ? ", check before linking" : ""}</span></span>
+                              <Button size="sm" variant="primary" icon={Link2} onClick={() => onLink(u.pin, m.person._id)}>Link</Button>
+                            </span>
+                          )}
+                          <span className="flex flex-wrap gap-2">
+                            <Select aria-label={`Link Device ID ${u.pin} to`} value="" onChange={(e) => e.target.value && onLink(u.pin, e.target.value)} className="h-10 min-w-0 flex-1 sm:max-w-72">
+                              <option value="">{m ? "Or link to someone else…" : "Link to an existing employee…"}</option>
+                              {options.map((p) => <option key={p._id} value={p._id} disabled={emailMissing(p)}>{p.name}{emailMissing(p) ? " (add an email first)" : (isFree ? !isFree(p) : p.fingerprint_id) ? " (already has a Device ID)" : ""}</option>)}
+                            </Select>
+                            <Button size="sm" variant="ghost" onClick={() => setNewOpen((s) => { const n = new Set(s); n.has(u.pin) ? n.delete(u.pin) : n.add(u.pin); return n; })}>
+                              {adding ? "Cancel new employee" : "Not an employee? Add as new"}
+                            </Button>
+                            {u.unassigned_punches > 0 && !u.machines.length && <Button size="sm" variant="danger" onClick={() => onDiscard(u.pin)}>Discard</Button>}
+                          </span>
+                          {adding && (
+                            <span className="flex min-w-0 items-center gap-2">
+                              <Input value={names[u.pin] ?? u.name ?? ""} placeholder="Name" maxLength={100} aria-label={`Name for Device ID ${u.pin}`}
+                                onChange={(e) => setNames((n) => ({ ...n, [u.pin]: e.target.value }))} className="h-10 min-w-0 flex-1" />
+                              <Input type="email" value={emails[u.pin] ?? ""} placeholder="Email (required)" aria-label={`Email for Device ID ${u.pin}`}
+                                onChange={(e) => setEmails((x) => ({ ...x, [u.pin]: e.target.value }))}
+                                onKeyDown={(e) => { if (e.key === "Enter") quickAdd([u]); }} className="h-10 min-w-0 flex-[1.3]" />
+                              <Button size="sm" variant="primary" icon={UserPlus} className="h-10 shrink-0" loading={busy === `add-${u.pin}`} onClick={() => quickAdd([u])}>Add</Button>
+                            </span>
+                          )}
+                        </>
+                      )}
                     </span>
-                    {staged ? <span className="col-span-2 text-sm text-emerald-700 sm:col-span-1 dark:text-emerald-300">Links to <b>{staged}</b> when you save</span> : (
-                      <span className="col-span-2 flex gap-2 sm:col-span-1">
-                        <Select aria-label={`Link Device ID ${u.pin} to`} value="" onChange={(e) => e.target.value && onLink(u.pin, e.target.value)} className="h-10 flex-1 sm:w-52">
-                          <option value="">Link to…</option>
-                          {options.map((p) => <option key={p._id} value={p._id} disabled={emailMissing(p)}>{p.name}{emailMissing(p) ? " (add an email first)" : p.fingerprint_id ? ` (has Device ID ${p.fingerprint_id})` : ""}</option>)}
-                        </Select>
-                        {u.unassigned_punches > 0 && !u.machines.length && <Button size="sm" variant="danger" onClick={() => onDiscard(u.pin)}>Discard</Button>}
-                      </span>
-                    )}
                   </li>
                 );
               })}
