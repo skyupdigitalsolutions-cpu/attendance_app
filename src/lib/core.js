@@ -50,6 +50,28 @@ export async function api(path, { method = "GET", params, body, timeout = 20000 
   return json;
 }
 
+/** Multipart upload (for emails with attachments). */
+export async function apiForm(path, formData, { timeout = 60000 } = {}) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeout);
+  let res;
+  try {
+    res = await fetch(`${API_BASE}/api${path}`, { method: "POST", body: formData, signal: ctrl.signal,
+      headers: session.token ? { Authorization: `Bearer ${session.token}` } : {} });
+  } catch (e) {
+    throw new Error(e.name === "AbortError" ? "The server took too long to answer. Try again." : "Can't reach the server. Check your connection.");
+  } finally { clearTimeout(timer); }
+  const json = await res.json().catch(() => ({}));
+  if (res.status === 401 && session.token) { onExpired(); throw new Error("Your session ended. Sign in again."); }
+  if (!res.ok) throw new Error(json.message || `Request failed (${res.status})`);
+  return json;
+}
+
+// ── email ───────────────────────────────────────────────────────────────────
+export const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+/** True when the person has no usable email (empty or the old "no email" placeholder). */
+export const emailMissing = (u) => !u?.email || !EMAIL_RE.test(u.email) || /@no-email\.invalid$/i.test(u.email);
+
 // ── dates (office time zone; calendar days are "YYYY-MM-DD") ────────────────
 export const todayLocal = () => new Date().toLocaleDateString("en-CA", { timeZone: TZ });
 export const ymdOfStored = (d) => new Date(d).toLocaleDateString("en-CA", { timeZone: TZ });

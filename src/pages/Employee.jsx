@@ -1,7 +1,8 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, CalendarPlus, Download, Home, IdCard, MessageSquareText, PencilLine } from "lucide-react";
+import { ArrowLeft, CalendarPlus, Download, Home, IdCard, Mail, MessageSquareText, PencilLine, TriangleAlert } from "lucide-react";
+import SendEmail from "../components/SendEmail";
 import {
-  api, addMonths, DAY_END, DAY_START, deviceIdOf, downloadCsv, empIdOf, fmtDay, fmtHours, fmtMinutes, fmtTime,
+  api, addMonths, DAY_END, DAY_START, deviceIdOf, downloadCsv, emailMissing, empIdOf, fmtDay, fmtHours, fmtMinutes, fmtTime,
   leaveLabel, localMinutes, monthEnd, monthStart, STATUS_LABEL, todayLocal,
 } from "../lib/core";
 import { useApp } from "../lib/app";
@@ -43,6 +44,7 @@ export default function Employee({ id }) {
   const [error, setError] = useState("");
   const [editIds, setEditIds] = useState(false);
   const [edit, setEdit] = useState(null); // { date, day }
+  const [mailing, setMailing] = useState(false);
   const ticket = useRef(0);
 
   useEffect(() => {
@@ -127,15 +129,24 @@ export default function Employee({ id }) {
               {person.designation && <span>{person.designation}</span>}
               {person.status === "inactive" && <Badge tone="absent">Inactive</Badge>}
             </p>
+            <p className="mt-0.5 text-sm">
+              {emailMissing(person)
+                ? <span className="inline-flex items-center gap-1 font-semibold text-amber-700 dark:text-amber-300"><TriangleAlert className="size-4" aria-hidden /> No email: add one to link attendance and send emails</span>
+                : <span className="text-zinc-500 dark:text-zinc-400">{person.email}</span>}
+            </p>
           </div>
-          <Button size="sm" icon={IdCard} onClick={() => setEditIds((v) => !v)}>Edit IDs</Button>
+          <div className="flex flex-wrap gap-2">
+            <Button size="sm" variant="primary" icon={Mail} disabled={emailMissing(person)} onClick={() => setMailing(true)}
+              title={emailMissing(person) ? "Add an email first" : `Email ${person.name}`}>Send email</Button>
+            <Button size="sm" icon={IdCard} onClick={() => setEditIds((v) => !v)}>Edit details</Button>
+          </div>
         </div>
         {editIds && (
           <IdsForm
             person={person}
             onCancel={() => setEditIds(false)}
             onSaved={(p, imported) => {
-              setPerson((x) => ({ ...x, employee_id: p.employee_id, fingerprint_id: p.fingerprint_id }));
+              setPerson((x) => ({ ...x, name: p.name || x.name, email: p.email || x.email, employee_id: p.employee_id, fingerprint_id: p.fingerprint_id }));
               setEditIds(false); invalidateUsers();
               toast(imported?.length ? `IDs saved. Imported ${imported.reduce((a, i) => a + i.punches, 0)} earlier punches.` : "IDs saved.");
               if (imported?.length) load();
@@ -205,6 +216,7 @@ export default function Employee({ id }) {
         </>
       )}
 
+      <SendEmail open={mailing} onClose={() => setMailing(false)} person={person} />
       <DayEditor open={Boolean(edit)} onClose={() => setEdit(null)} person={person} date={edit?.date} day={edit?.day} onSaved={load} />
     </div>
   );
@@ -315,6 +327,8 @@ const Row = ({ k, v }) => (
 );
 
 function IdsForm({ person, onCancel, onSaved }) {
+  const [name, setName] = useState(person.name || "");
+  const [email, setEmail] = useState(emailMissing(person) ? "" : person.email || "");
   const [emp, setEmp] = useState(empIdOf(person));
   const [dev, setDev] = useState(deviceIdOf(person));
   const [err, setErr] = useState("");
@@ -323,19 +337,21 @@ function IdsForm({ person, onCancel, onSaved }) {
     e.preventDefault();
     setBusy(true); setErr("");
     try {
-      const j = await api(`/attendance-app/user/${person._id}/ids`, { method: "PATCH", body: { employee_id: emp.trim(), fingerprint_id: dev.trim() } });
+      const j = await api(`/attendance-app/user/${person._id}/ids`, { method: "PATCH", body: { name: name.trim(), ...(email.trim() && email.trim() !== person.email ? { email: email.trim() } : {}), employee_id: emp.trim(), fingerprint_id: dev.trim() } });
       onSaved(j.data, j.imported);
     } catch (ex) { setErr(ex.message); } finally { setBusy(false); }
   };
   return (
-    <form onSubmit={save} className="mt-4 grid gap-3 border-t border-zinc-100 pt-4 sm:grid-cols-[1fr_1fr_auto] sm:items-end dark:border-zinc-800">
+    <form onSubmit={save} className="mt-4 grid gap-3 border-t border-zinc-100 pt-4 sm:grid-cols-2 lg:grid-cols-[1fr_1.3fr_0.8fr_0.8fr_auto] lg:items-end dark:border-zinc-800">
+      <Field label="Name"><Input value={name} maxLength={100} onChange={(e) => setName(e.target.value)} /></Field>
+      <Field label="Email" hint="(required)"><Input type="email" value={email} placeholder="name@company.com" onChange={(e) => setEmail(e.target.value)} /></Field>
       <Field label="Employee ID"><Input value={emp} maxLength={40} placeholder="e.g. SKY012" onChange={(e) => setEmp(e.target.value)} /></Field>
       <Field label="Device ID" hint="(number on the fingerprint machine)"><Input value={dev} maxLength={40} placeholder="e.g. 7" inputMode="numeric" onChange={(e) => setDev(e.target.value)} /></Field>
       <div className="flex gap-2">
         <Button variant="ghost" onClick={onCancel}>Cancel</Button>
-        <Button variant="primary" type="submit" loading={busy}>Save IDs</Button>
+        <Button variant="primary" type="submit" loading={busy}>Save</Button>
       </div>
-      {err && <p role="alert" className="text-sm font-semibold text-rose-600 sm:col-span-3 dark:text-rose-400">{err}</p>}
+      {err && <p role="alert" className="text-sm font-semibold text-rose-600 sm:col-span-2 lg:col-span-5 dark:text-rose-400">{err}</p>}
     </form>
   );
 }

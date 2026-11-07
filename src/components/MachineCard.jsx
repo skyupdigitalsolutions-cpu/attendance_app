@@ -2,7 +2,7 @@
 // "Get users from machine" and "Re-send punches" for dates that are missing.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { CheckCircle2, Clock, Download, Eraser, Fingerprint, Power, RefreshCw, TriangleAlert, Upload, Users, Wifi, WifiOff, X, XCircle } from "lucide-react";
-import { addDays, api, timeAgo, todayLocal } from "../lib/core";
+import { addDays, api, EMAIL_RE, emailMissing, timeAgo, todayLocal } from "../lib/core";
 import { Badge, Button, Card, CardTitle, Empty, Field, Input, Muted, Select, Spinner, cx, useToast } from "./ui";
 import { UserPlus } from "lucide-react";
 import CreateFromMachine from "./CreateFromMachine";
@@ -16,8 +16,33 @@ export default function MachineCard({ people, onLink, linkedNow, onDiscard, refr
   const [from, setFrom] = useState(addDays(todayLocal(), -6));
   const [to, setTo] = useState(todayLocal());
   const [busy, setBusy] = useState("");
+  const [passwords, setPasswords] = useState(null); // shown once after quick add
   const [picked, setPicked] = useState(new Set());
   const [creating, setCreating] = useState(null); // machine users to create
+  const [names, setNames] = useState({});           // typed names per machine number
+  const [emails, setEmails] = useState({});         // typed emails per machine number (required)
+  const nameOf = (u) => (names[u.pin] ?? u.name ?? "").trim();
+  const emailOf = (u) => (emails[u.pin] ?? "").trim();
+
+  // Quick add: name + email for a machine number, so their punches count. Email is required.
+  const quickAdd = async (list) => {
+    const items = list.map((u) => ({ pin: u.pin, name: nameOf(u), email: emailOf(u) }));
+    const unnamed = items.filter((x) => !x.name);
+    if (unnamed.length) return toast(`Type a name for Device ID ${unnamed.map((x) => x.pin).join(", ")} first.`);
+    const noMail = items.filter((x) => !EMAIL_RE.test(x.email));
+    if (noMail.length) return toast(`Enter a valid email for Device ID ${noMail.map((x) => x.pin).join(", ")} (required to link attendance).`);
+    setBusy(list.length === 1 ? `add-${list[0].pin}` : "add-all");
+    try {
+      const r = (await api("/attendance-app/machine/create-employees", { method: "POST", body: { items, quick: true }, timeout: 60000 })).data;
+      const ok = r.results.filter((x) => x.user_id), bad = r.results.filter((x) => !x.user_id);
+      const punches = ok.reduce((a, x) => a + (x.imported_punches || 0), 0);
+      if (ok.length) toast(`${ok.length === 1 ? ok[0].name : `${ok.length} people`} added.${punches ? ` ${punches} earlier punch${punches === 1 ? " now counts" : "es now count"}.` : ""}${bad.length ? ` Not added: ${bad.map((x) => `${x.pin} (${x.error})`).join(", ")}` : ""}`);
+      else toast(`Not added: ${bad.map((x) => `${x.pin} (${x.error})`).join(", ")}`);
+      setNames({}); setEmails({}); load(); onCreated?.();
+      const pw = ok.filter((x) => x.temporary_password);
+      if (pw.length) setPasswords(pw);
+    } catch (e) { toast(e.message); } finally { setBusy(""); }
+  };
 
   const [refreshing, setRefreshing] = useState(false);
   const [updatedAt, setUpdatedAt] = useState(null);
@@ -93,6 +118,7 @@ export default function MachineCard({ people, onLink, linkedNow, onDiscard, refr
             <span className="text-zinc-500">{d.users_count ? `${d.users_count} users on the machine` : "User list not fetched yet"}</span>
             {d.last_handshake_at && <span className="text-zinc-500">Last reconnect {timeAgo(d.last_handshake_at)}</span>}
           </div>
+          <Completeness d={d} busy={busy} send={send} />
           <NoReplyHelp d={d} busy={busy} send={send} />
           {d.commands.length > 0 && (
             <div className="flex flex-col gap-1">
@@ -155,6 +181,8 @@ export default function MachineCard({ people, onLink, linkedNow, onDiscard, refr
         </div>
       )}
 
+      {data.users.length > 0 && <AllMachineUsers users={data.users} />}
+
       {data.users.length > 0 && (
         <div className="flex flex-col gap-2">
           <div className="flex flex-wrap items-center justify-between gap-2">
@@ -164,6 +192,11 @@ export default function MachineCard({ people, onLink, linkedNow, onDiscard, refr
             </p>
             {notLinked.length > 0 && (
               <span className="flex flex-wrap gap-2">
+                <Button size="sm" icon={UserPlus} loading={busy === "add-all"} onClick={() => {
+                  const ready = notLinked.filter((u) => nameOf(u) && EMAIL_RE.test(emailOf(u)));
+                  if (!ready.length) return toast("Enter a name and an email for each person first.");
+                  if (confirm(`Add ${ready.length} ${ready.length === 1 ? "person" : "people"} with a name and email filled in?${ready.length < notLinked.length ? ` (${notLinked.length - ready.length} still need an email.)` : ""}`)) quickAdd(ready);
+                }}>Add all ({notLinked.length})</Button>
                 <Button size="sm" variant="ghost" onClick={() => setPicked(picked.size === notLinked.length ? new Set() : new Set(notLinked.map((u) => u.pin)))}>
                   {picked.size === notLinked.length ? "Clear selection" : "Select all"}
                 </Button>
@@ -174,29 +207,37 @@ export default function MachineCard({ people, onLink, linkedNow, onDiscard, refr
               </span>
             )}
           </div>
-          {notLinked.length > 0 && <Muted>Not in your employee list yet? Tick them and press Create employees. Already an employee? Use Link to employee.</Muted>}
+          {notLinked.length > 0 && <Muted>Enter a name and <b>email</b> (required) and press <b>Add</b> so their punches count. Already an employee? Use <b>Link to</b>.</Muted>}
           {notLinked.length > 0 && (
             <ul className="rounded-xl border border-zinc-200 dark:border-zinc-700">
               {notLinked.map((u) => {
                 const staged = linkedNow(u.pin);
                 return (
-                  <li key={u.pin} className="grid grid-cols-[1fr_auto] items-center gap-x-3 gap-y-2 border-t border-zinc-100 px-3 py-2.5 first:border-0 sm:grid-cols-[8rem_1fr_auto] dark:border-zinc-800">
+                  <li key={u.pin} className="grid grid-cols-[1fr] items-center gap-x-3 gap-y-2 border-t border-zinc-100 px-3 py-2.5 first:border-0 sm:grid-cols-[8rem_1fr_auto] dark:border-zinc-800">
                     <label className="flex cursor-pointer items-center gap-2">
                       <input type="checkbox" className="size-5 accent-brand-600" checked={picked.has(u.pin)} aria-label={`Select Device ID ${u.pin}`}
                         onChange={() => setPicked((s) => { const n = new Set(s); n.has(u.pin) ? n.delete(u.pin) : n.add(u.pin); return n; })} />
                       <span>Device ID <b className="tabular-nums">{u.pin}</b></span>
                     </label>
-                    <span className="min-w-0 text-sm">
-                      <b>{u.name || "No name on the machine"}</b>
-                      {u.unassigned_punches > 0 && <span className="text-zinc-500">, {u.unassigned_punches} punch{u.unassigned_punches === 1 ? "" : "es"} kept</span>}
+                    <span className="flex min-w-0 flex-col gap-1 text-sm">
+                      <span className="flex min-w-0 items-center gap-2">
+                        <Input value={names[u.pin] ?? u.name ?? ""} placeholder="Name" maxLength={100} aria-label={`Name for Device ID ${u.pin}`}
+                          onChange={(e) => setNames((n) => ({ ...n, [u.pin]: e.target.value }))}
+                          className="h-10 min-w-0 flex-1" />
+                        <Input type="email" value={emails[u.pin] ?? ""} placeholder="Email (required)" aria-label={`Email for Device ID ${u.pin}`}
+                          onChange={(e) => setEmails((m) => ({ ...m, [u.pin]: e.target.value }))}
+                          onKeyDown={(e) => { if (e.key === "Enter") quickAdd([u]); }}
+                          className="h-10 min-w-0 flex-[1.3]" />
+                        <Button size="sm" variant="primary" icon={UserPlus} className="h-10 shrink-0" loading={busy === `add-${u.pin}`} onClick={() => quickAdd([u])}>Add</Button>
+                      </span>
+                      {u.unassigned_punches > 0 && <span className="text-xs text-zinc-500">{u.unassigned_punches} punch{u.unassigned_punches === 1 ? "" : "es"} waiting to count</span>}
                     </span>
                     {staged ? <span className="col-span-2 text-sm text-emerald-700 sm:col-span-1 dark:text-emerald-300">Links to <b>{staged}</b> when you save</span> : (
                       <span className="col-span-2 flex gap-2 sm:col-span-1">
-                        <Select aria-label={`Link Device ID ${u.pin} to`} value="" onChange={(e) => e.target.value && onLink(u.pin, e.target.value)} className="h-10 flex-1 sm:w-64">
-                          <option value="">Link to employee…</option>
-                          {options.map((p) => <option key={p._id} value={p._id}>{p.name}{p.fingerprint_id ? ` (has Device ID ${p.fingerprint_id})` : ""}</option>)}
+                        <Select aria-label={`Link Device ID ${u.pin} to`} value="" onChange={(e) => e.target.value && onLink(u.pin, e.target.value)} className="h-10 flex-1 sm:w-52">
+                          <option value="">Link to…</option>
+                          {options.map((p) => <option key={p._id} value={p._id} disabled={emailMissing(p)}>{p.name}{emailMissing(p) ? " (add an email first)" : p.fingerprint_id ? ` (has Device ID ${p.fingerprint_id})` : ""}</option>)}
                         </Select>
-                        <Button size="sm" icon={UserPlus} onClick={() => setCreating([u])} aria-label={`Create employee for Device ID ${u.pin}`}><span className="max-sm:sr-only">Create</span></Button>
                         {u.unassigned_punches > 0 && !u.machines.length && <Button size="sm" variant="danger" onClick={() => onDiscard(u.pin)}>Discard</Button>}
                       </span>
                     )}
@@ -205,6 +246,18 @@ export default function MachineCard({ people, onLink, linkedNow, onDiscard, refr
               })}
             </ul>
           )}
+        </div>
+      )}
+      {passwords && (
+        <div className="flex flex-col gap-2 rounded-xl border border-emerald-300 bg-emerald-50 p-3 text-sm dark:border-emerald-500/40 dark:bg-emerald-500/10">
+          <b>Temporary passwords (shown once). Share them privately; people can also use Forgot password.</b>
+          <ul className="flex flex-col gap-1">{passwords.map((x) => (
+            <li key={x.pin} className="flex flex-wrap items-center gap-2"><span>{x.name}</span><span className="text-zinc-500">{x.email}</span>
+              <code className="rounded bg-white px-2 py-0.5 font-mono dark:bg-zinc-900">{x.temporary_password}</code></li>))}</ul>
+          <div className="flex gap-2">
+            <Button size="sm" onClick={async () => { try { await navigator.clipboard.writeText(passwords.map((x) => `${x.name}\t${x.email}\t${x.temporary_password}`).join("\n")); toast("Copied."); } catch { toast("Couldn't copy."); } }}>Copy all</Button>
+            <Button size="sm" variant="ghost" onClick={() => setPasswords(null)}>Done</Button>
+          </div>
         </div>
       )}
       <CreateFromMachine
@@ -248,6 +301,70 @@ function NoReplyHelp({ d, busy, send }) {
           <summary className="cursor-pointer font-semibold">Other calls from the machine (for support)</summary>
           <ul className="mt-1 flex flex-col gap-0.5 font-mono">{d.unknown_calls.map((u, i) => <li key={i} className="break-all">{u}</li>)}</ul>
         </details>
+      )}
+    </div>
+  );
+}
+
+// "Machine has 19 users – received 19": compares what the machine reports about itself
+// (its INFO line) with what the server actually received.
+function Completeness({ d, busy, send }) {
+  const info = d.info;
+  if (!info || info.users == null) {
+    return <p className="text-xs text-zinc-500">The machine hasn't reported its totals yet. They appear after its next check-in.</p>;
+  }
+  const missing = d.users_missing || 0;
+  return (
+    <div className={cx("flex flex-wrap items-center gap-x-4 gap-y-2 rounded-xl px-3 py-2 text-sm",
+      missing ? "bg-amber-50 text-amber-900 dark:bg-amber-500/10 dark:text-amber-100" : "bg-emerald-50 text-emerald-800 dark:bg-emerald-500/10 dark:text-emerald-200")}>
+      <span className="flex items-center gap-1.5 font-semibold">
+        {missing ? <TriangleAlert className="size-4" aria-hidden /> : <CheckCircle2 className="size-4" aria-hidden />}
+        Machine has {info.users} user{info.users === 1 ? "" : "s"}, received {d.users_count}
+        {missing ? ` (${missing} missing)` : ": complete"}
+      </span>
+      {info.punches != null && <span className="opacity-80">{info.punches.toLocaleString("en-IN")} punches stored on the machine</span>}
+      {info.fingerprints != null && <span className="opacity-80">{info.fingerprints} fingerprints</span>}
+      {info.firmware && <span className="text-xs opacity-60">{info.firmware}</span>}
+      {missing > 0 && !d.resend_all && (
+        <Button size="sm" variant="primary" icon={Upload} className="ml-auto" loading={busy === "/attendance-app/machine/full-upload"}
+          onClick={() => send("/attendance-app/machine/full-upload", { serial: d.serial }, "Asked the machine to upload all users and punches again at its next connection.")}>
+          Get the missing users
+        </Button>
+      )}
+    </div>
+  );
+}
+
+// Every user on the machine, like the machine's own "All Users" screen, with who they're linked to.
+function AllMachineUsers({ users }) {
+  const [open, setOpen] = useState(false);
+  const sorted = [...users].sort((a, b) => a.pin.localeCompare(b.pin, undefined, { numeric: true }));
+  return (
+    <div className="rounded-xl border border-zinc-200 dark:border-zinc-700">
+      <button type="button" onClick={() => setOpen((o) => !o)} aria-expanded={open}
+        className="flex w-full items-center justify-between gap-2 px-3 py-2.5 text-left text-sm font-semibold hover:bg-zinc-50 dark:hover:bg-zinc-800/50">
+        <span className="flex items-center gap-2"><Users className="size-4" aria-hidden /> All users on the machine ({users.length})</span>
+        <span className="text-xs text-zinc-500">{open ? "Hide" : "Show"}</span>
+      </button>
+      {open && (
+        <div className="max-h-96 overflow-y-auto border-t border-zinc-100 dark:border-zinc-800">
+          <table className="w-full text-sm">
+            <thead className="sticky top-0 bg-white text-left text-xs font-bold text-zinc-500 dark:bg-zinc-900">
+              <tr><th className="px-3 py-2">Device ID</th><th className="px-3 py-2">Name on the machine</th><th className="px-3 py-2">Employee in the system</th></tr>
+            </thead>
+            <tbody>
+              {sorted.map((u) => (
+                <tr key={u.pin} className="border-t border-zinc-100 dark:border-zinc-800">
+                  <td className="px-3 py-2 font-bold tabular-nums">{u.pin}</td>
+                  <td className="px-3 py-2">{u.name || <span className="text-zinc-400">No name</span>}</td>
+                  <td className="px-3 py-2">{u.employee
+                    ? <span>{u.employee.name}{u.employee.employee_id ? <span className="text-zinc-500"> ({u.employee.employee_id})</span> : null}</span>
+                    : <Badge tone="absent">Not linked</Badge>}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );
