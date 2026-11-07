@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Fingerprint, Save, Search, Trash2, Undo2 } from "lucide-react";
-import { api, emailMissing, fmtDay, fmtTime, ymdOfStored } from "../lib/core";
+import { api, fmtDay, fmtTime, ymdOfStored } from "../lib/core";
 import { useApp } from "../lib/app";
 import MachineCard from "../components/MachineCard";
 import { Avatar, Badge, Button, Card, CardTitle, Chip, Empty, Input, Muted, Select, Spinner, cx, useToast } from "../components/ui";
@@ -59,7 +59,6 @@ export default function Ids() {
   const state = (p) => {
     if (dup.employee_id.has(val(p, "employee_id")) || dup.fingerprint_id.has(val(p, "fingerprint_id"))) return <Badge tone="absent">Duplicate</Badge>;
     if (edits[p._id]) return <Badge tone="late">Not saved</Badge>;
-    if (emailMissing(p)) return <Badge tone="absent">No email</Badge>;
     if (!val(p, "fingerprint_id")) return <Badge tone="not-marked">No device ID</Badge>;
     if (!val(p, "employee_id")) return <Badge tone="not-marked">No employee ID</Badge>;
     return <Badge tone="present">Ready</Badge>;

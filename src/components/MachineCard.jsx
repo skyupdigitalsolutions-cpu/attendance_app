@@ -2,7 +2,7 @@
 // "Get users from machine" and "Re-send punches" for dates that are missing.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { CheckCircle2, Clock, Download, Eraser, Fingerprint, Power, RefreshCw, TriangleAlert, Upload, Users, Wifi, WifiOff, X, XCircle } from "lucide-react";
-import { addDays, api, EMAIL_RE, emailMissing, suggestLinks, timeAgo, todayLocal } from "../lib/core";
+import { addDays, api, EMAIL_RE, suggestLinks, timeAgo, todayLocal } from "../lib/core";
 import { Badge, Button, Card, CardTitle, Empty, Field, Input, Muted, Select, Spinner, cx, useToast } from "./ui";
 import { Link2, UserPlus } from "lucide-react";
 import CreateFromMachine from "./CreateFromMachine";
@@ -20,18 +20,18 @@ export default function MachineCard({ people, isFree, onLink, linkedNow, onDisca
   const [picked, setPicked] = useState(new Set());
   const [creating, setCreating] = useState(null); // machine users to create
   const [names, setNames] = useState({});           // typed names per machine number
-  const [emails, setEmails] = useState({});         // typed emails per machine number (required)
+  const [emails, setEmails] = useState({});         // typed emails per machine number (optional)
   const [newOpen, setNewOpen] = useState(new Set());   // rows where the admin chose "add as a new employee"
   const nameOf = (u) => (names[u.pin] ?? u.name ?? "").trim();
   const emailOf = (u) => (emails[u.pin] ?? "").trim();
 
-  // Quick add: name + email for a machine number, so their punches count. Email is required.
+  // Quick add: name + email for a machine number, so their punches count. Email is optional.
   const quickAdd = async (list) => {
     const items = list.map((u) => ({ pin: u.pin, name: nameOf(u), email: emailOf(u) }));
     const unnamed = items.filter((x) => !x.name);
     if (unnamed.length) return toast(`Type a name for Device ID ${unnamed.map((x) => x.pin).join(", ")} first.`);
-    const noMail = items.filter((x) => !EMAIL_RE.test(x.email));
-    if (noMail.length) return toast(`Enter a valid email for Device ID ${noMail.map((x) => x.pin).join(", ")} (required to link attendance).`);
+    const badMail = items.filter((x) => x.email && !EMAIL_RE.test(x.email));
+    if (badMail.length) return toast(`The email for Device ID ${badMail.map((x) => x.pin).join(", ")} doesn't look right. Fix it or leave it empty.`);
     setBusy(list.length === 1 ? `add-${list[0].pin}` : "add-all");
     try {
       const r = (await api("/attendance-app/machine/create-employees", { method: "POST", body: { items, quick: true }, timeout: 60000 })).data;
@@ -92,7 +92,7 @@ export default function MachineCard({ people, isFree, onLink, linkedNow, onDisca
   const options = [...people].filter((p) => p.status !== "inactive").sort((a, b) => a.name.localeCompare(b.name));
   // Best existing employee for each unlinked machine name (only people without a Device ID yet)
   const toMatch = notLinked.filter((u) => !linkedNow(u.pin));
-  const matches = suggestLinks(toMatch, options.filter((p) => (isFree ? isFree(p) : !p.fingerprint_id) && !emailMissing(p)));
+  const matches = suggestLinks(toMatch, options.filter((p) => (isFree ? isFree(p) : !p.fingerprint_id)));
   const sure = [...matches].filter(([, m]) => !m.ambiguous);
   const linkAll = () => { sure.forEach(([pin, m]) => onLink(pin, m.person._id, true)); toast(`${sure.length} linked. Press Save changes to apply.`); };
 
@@ -200,9 +200,9 @@ export default function MachineCard({ people, isFree, onLink, linkedNow, onDisca
               <span className="flex flex-wrap gap-2">
                 {sure.length > 0 && <Button size="sm" variant="primary" icon={Link2} onClick={linkAll}>Link all matches ({sure.length})</Button>}
                 <Button size="sm" icon={UserPlus} loading={busy === "add-all"} onClick={() => {
-                  const ready = notLinked.filter((u) => nameOf(u) && EMAIL_RE.test(emailOf(u)));
-                  if (!ready.length) return toast("Enter a name and an email for each person first.");
-                  if (confirm(`Add ${ready.length} ${ready.length === 1 ? "person" : "people"} with a name and email filled in?${ready.length < notLinked.length ? ` (${notLinked.length - ready.length} still need an email.)` : ""}`)) quickAdd(ready);
+                  const ready = notLinked.filter((u) => nameOf(u) && (!emailOf(u) || EMAIL_RE.test(emailOf(u))));
+                  if (!ready.length) return toast("Enter a name for each person first.");
+                  if (confirm(`Add ${ready.length} ${ready.length === 1 ? "person" : "people"} as new employees? Anyone without an email is attendance-only.${ready.length < notLinked.length ? ` (${notLinked.length - ready.length} have no name or a wrong email and are skipped.)` : ""}`)) quickAdd(ready);
                 }}>Add all ({notLinked.length})</Button>
                 <Button size="sm" variant="ghost" onClick={() => setPicked(picked.size === notLinked.length ? new Set() : new Set(notLinked.map((u) => u.pin)))}>
                   {picked.size === notLinked.length ? "Clear selection" : "Select all"}
@@ -243,7 +243,7 @@ export default function MachineCard({ people, isFree, onLink, linkedNow, onDisca
                           <span className="flex flex-wrap gap-2">
                             <Select aria-label={`Link Device ID ${u.pin} to`} value="" onChange={(e) => e.target.value && onLink(u.pin, e.target.value)} className="h-10 min-w-0 flex-1 sm:max-w-72">
                               <option value="">{m ? "Or link to someone else…" : "Link to an existing employee…"}</option>
-                              {options.map((p) => <option key={p._id} value={p._id} disabled={emailMissing(p)}>{p.name}{emailMissing(p) ? " (add an email first)" : (isFree ? !isFree(p) : p.fingerprint_id) ? " (already has a Device ID)" : ""}</option>)}
+                              {options.map((p) => <option key={p._id} value={p._id}>{p.name}{(isFree ? !isFree(p) : p.fingerprint_id) ? " (already has a Device ID)" : ""}</option>)}
                             </Select>
                             <Button size="sm" variant="ghost" onClick={() => setNewOpen((s) => { const n = new Set(s); n.has(u.pin) ? n.delete(u.pin) : n.add(u.pin); return n; })}>
                               {adding ? "Cancel new employee" : "Not an employee? Add as new"}
@@ -254,7 +254,7 @@ export default function MachineCard({ people, isFree, onLink, linkedNow, onDisca
                             <span className="flex min-w-0 items-center gap-2">
                               <Input value={names[u.pin] ?? u.name ?? ""} placeholder="Name" maxLength={100} aria-label={`Name for Device ID ${u.pin}`}
                                 onChange={(e) => setNames((n) => ({ ...n, [u.pin]: e.target.value }))} className="h-10 min-w-0 flex-1" />
-                              <Input type="email" value={emails[u.pin] ?? ""} placeholder="Email (required)" aria-label={`Email for Device ID ${u.pin}`}
+                              <Input type="email" value={emails[u.pin] ?? ""} placeholder="Email (optional)" aria-label={`Email for Device ID ${u.pin}`}
                                 onChange={(e) => setEmails((x) => ({ ...x, [u.pin]: e.target.value }))}
                                 onKeyDown={(e) => { if (e.key === "Enter") quickAdd([u]); }} className="h-10 min-w-0 flex-[1.3]" />
                               <Button size="sm" variant="primary" icon={UserPlus} className="h-10 shrink-0" loading={busy === `add-${u.pin}`} onClick={() => quickAdd([u])}>Add</Button>

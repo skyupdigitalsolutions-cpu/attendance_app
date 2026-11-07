@@ -51,7 +51,7 @@ export default function CreateFromMachine({ open, onClose, machineUsers, people,
     <Dialog open={open} onClose={onClose} className={WIDE}
       title={done ? "Employees created" : `Create ${rows.length} employee${rows.length === 1 ? "" : "s"} from the machine`}
       subtitle={done ? "Share each temporary password privately. People can also use Forgot password to set their own."
-        : "Name and Device ID come from the machine. Add an email for each person, then choose their department and designation."}>
+        : "Name and Device ID come from the machine. Email is optional (without one, the person is attendance-only and can't sign in). Choose their department and designation."}>
       {done ? (
         <div className="flex flex-col gap-3">
           <ul className="max-h-80 overflow-y-auto rounded-xl border border-zinc-200 dark:border-zinc-700">
@@ -92,7 +92,7 @@ export default function CreateFromMachine({ open, onClose, machineUsers, people,
                 <li key={r.pin} className={cx("grid grid-cols-2 gap-2 rounded-xl p-1 sm:grid-cols-[4.5rem_1fr_1.3fr_8rem] sm:items-center", res && !res.ok && "bg-rose-50 dark:bg-rose-500/10")}>
                   <span className="font-bold tabular-nums sm:pl-1">#{r.pin}</span>
                   <Input aria-label={`Name for ${r.pin}`} value={r.name} onChange={(e) => set(i, "name", e.target.value)} className="h-10" placeholder="Name" />
-                  <Input aria-label={`Email for ${r.pin}`} type="email" value={r.email} onChange={(e) => set(i, "email", e.target.value)} className="col-span-2 h-10 sm:col-span-1" placeholder="name@company.com (required)" />
+                  <Input aria-label={`Email for ${r.pin}`} type="email" value={r.email} onChange={(e) => set(i, "email", e.target.value)} className="col-span-2 h-10 sm:col-span-1" placeholder="name@company.com (optional)" />
                   <Input aria-label={`Employee ID for ${r.pin}`} value={r.employee_id} onChange={(e) => set(i, "employee_id", e.target.value)} className="col-span-2 h-10 sm:col-span-1" placeholder="Optional" />
                   {res && !res.ok && <span className="col-span-2 px-1 text-sm text-rose-600 sm:col-span-4 dark:text-rose-400">{res.error}</span>}
                 </li>
